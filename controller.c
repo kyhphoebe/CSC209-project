@@ -257,16 +257,31 @@ static void run_simulation(uint32_t total_trials, uint32_t task_id)
     uint32_t base_chunk = total_trials / (uint32_t)alive_count;
     uint32_t remainder  = total_trials % (uint32_t)alive_count;
 
-    /* Send tasks. */
+    /* Send tasks.
+     * Distribute remainder one-by-one to the first `remainder` workers so
+     * every worker that is sent a task gets at least 1 trial.  Workers whose
+     * computed chunk would be 0 are skipped entirely — sending 0 would
+     * trigger the shutdown sentinel and kill those workers permanently.
+     * Skipped workers remain blocked on read(), ready for the next command. */
     int worker_indices[MAX_WORKERS];
-    int sent = 0;
+    int sent      = 0; /* index among alive workers, used to assign remainder */
+    int alive_idx = 0;
+
     for (int i = 0; i < num_workers; i++) {
         if (!workers[i].alive) continue;
 
+        /* Workers 0 .. remainder-1 each get one extra trial. */
+        uint32_t chunk = base_chunk + (alive_idx < (int)remainder ? 1u : 0u);
+        alive_idx++;
+
+        if (chunk == 0) {
+            /* This worker would receive the shutdown sentinel — skip it. */
+            continue;
+        }
+
         task_msg_t task;
         task.task_id    = task_id;
-        /* Give remainder trials to the last participating worker. */
-        task.num_trials = base_chunk + (sent == alive_count - 1 ? remainder : 0);
+        task.num_trials = chunk;
 
         if (write_full(workers[i].task_write_fd, &task, sizeof(task)) < 0) {
             if (errno == EPIPE) {
