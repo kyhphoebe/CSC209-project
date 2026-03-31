@@ -11,6 +11,9 @@
  * Semantics : instructs the worker to run `num_trials` Monte Carlo trials.
  *             A num_trials value of 0 is the shutdown sentinel: the worker
  *             must close its pipes and exit cleanly upon receiving it.
+ * Invariants:
+ *   - task_id values are assigned by the parent and increase monotonically.
+ *   - num_trials == 0 is reserved for shutdown and never used for work.
  * Fields    :
  *   task_id    – monotonically increasing identifier assigned by the parent
  *                so results can be matched back to the originating command.
@@ -31,6 +34,15 @@ typedef struct {
  *             the result to the originating command via task_id, accumulates
  *             num_hits and num_trials across all workers, then computes the
  *             combined π estimate and 95 % confidence interval.
+ * Invariants:
+ *   - task_id must equal the corresponding request task_id.
+ *   - num_trials and num_hits satisfy 1 <= num_trials and num_hits <= num_trials.
+ *
+ * Read/Write rule for both message types:
+ *   - Sender writes exactly sizeof(message_struct) bytes via write_full().
+ *   - Receiver must read exactly sizeof(message_struct) bytes via read_full().
+ *   - Short read, EOF mid-message, or write/read error is treated as a
+ *     protocol/pipe failure by the receiver/controller.
  * Fields    :
  *   task_id    – mirrors the task_id sent in the corresponding task_msg_t.
  *   num_trials – number of trials the worker actually performed (≥ 1).

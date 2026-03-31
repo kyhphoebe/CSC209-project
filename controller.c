@@ -63,6 +63,26 @@ typedef struct {
 static worker_t workers[MAX_WORKERS];
 static int      num_workers = 0;
 
+static void close_fd_if_open(int *fd)
+{
+    if (*fd >= 0) {
+        close(*fd);
+        *fd = -1;
+    }
+}
+
+static void close_worker_fds(int i)
+{
+    close_fd_if_open(&workers[i].task_write_fd);
+    close_fd_if_open(&workers[i].result_read_fd);
+}
+
+static void mark_worker_dead(int i)
+{
+    workers[i].alive = 0;
+    close_worker_fds(i);
+}
+
 /* -------------------------------------------------------------------------
  * SIGCHLD handler — reap unexpected worker deaths without blocking.
  * ---------------------------------------------------------------------- */
@@ -132,23 +152,38 @@ static int spawn_workers(int n, unsigned int base_seed)
     /* Two pipe FDs per worker: [0]=read, [1]=write */
     int task_pipes[MAX_WORKERS][2];
     int result_pipes[MAX_WORKERS][2];
+    int pipes_ready = 0;
+    int spawned = 0;
+
+    for (int i = 0; i < n; i++) {
+        task_pipes[i][0] = -1;
+        task_pipes[i][1] = -1;
+        result_pipes[i][0] = -1;
+        result_pipes[i][1] = -1;
+
+        workers[i].pid = 0;
+        workers[i].task_write_fd = -1;
+        workers[i].result_read_fd = -1;
+        workers[i].alive = 0;
+    }
 
     for (int i = 0; i < n; i++) {
         if (pipe(task_pipes[i]) < 0) {
             perror("controller: pipe (task)");
-            return -1;
+            goto fail;
         }
         if (pipe(result_pipes[i]) < 0) {
             perror("controller: pipe (result)");
-            return -1;
+            goto fail;
         }
+        pipes_ready++;
     }
 
     for (int i = 0; i < n; i++) {
         pid_t pid = fork();
         if (pid < 0) {
             perror("controller: fork");
-            return -1;
+            goto fail;
         }
 
         if (pid == 0) {
@@ -189,10 +224,33 @@ static int spawn_workers(int n, unsigned int base_seed)
         workers[i].task_write_fd = task_pipes[i][1];
         workers[i].result_read_fd = result_pipes[i][0];
         workers[i].alive         = 1;
+        spawned++;
     }
 
     num_workers = n;
     return 0;
+
+fail:
+    for (int i = 0; i < pipes_ready; i++) {
+        if (task_pipes[i][0] >= 0) close(task_pipes[i][0]);
+        if (task_pipes[i][1] >= 0) close(task_pipes[i][1]);
+        if (result_pipes[i][0] >= 0) close(result_pipes[i][0]);
+        if (result_pipes[i][1] >= 0) close(result_pipes[i][1]);
+    }
+
+    for (int i = 0; i < spawned; i++) {
+        close_worker_fds(i);
+        if (workers[i].pid > 0) {
+            kill(workers[i].pid, SIGTERM);
+            if (waitpid(workers[i].pid, NULL, 0) < 0 && errno != ECHILD) {
+                perror("controller: waitpid rollback");
+            }
+        }
+        workers[i].pid = 0;
+        workers[i].alive = 0;
+    }
+    num_workers = 0;
+    return -1;
 }
 
 /* -------------------------------------------------------------------------
@@ -206,19 +264,15 @@ static void shutdown_workers(void)
     shutdown_msg.num_trials = SHUTDOWN_SENTINEL;
 
     for (int i = 0; i < num_workers; i++) {
-        if (!workers[i].alive) continue;
-
-        if (write_full(workers[i].task_write_fd, &shutdown_msg,
+        if (workers[i].alive &&
+            write_full(workers[i].task_write_fd, &shutdown_msg,
                        sizeof(shutdown_msg)) < 0) {
             /* Worker may have already died; SIGCHLD will have marked it. */
             if (errno != EPIPE) {
                 perror("controller: write shutdown");
             }
         }
-        close(workers[i].task_write_fd);
-        close(workers[i].result_read_fd);
-        workers[i].task_write_fd  = -1;
-        workers[i].result_read_fd = -1;
+        close_worker_fds(i);
     }
 
     /* Blocking wait for every child. */
@@ -231,6 +285,7 @@ static void shutdown_workers(void)
                 }
             }
             workers[i].alive = 0;
+            workers[i].pid = 0;
         }
     }
 }
@@ -287,11 +342,11 @@ static void run_simulation(uint32_t total_trials, uint32_t task_id)
             if (errno == EPIPE) {
                 fprintf(stderr,
                         "controller: worker %d pipe broken, skipping\n", i);
-                workers[i].alive = 0;
+                mark_worker_dead(i);
                 continue;
             }
             perror("controller: write task");
-            workers[i].alive = 0;
+            mark_worker_dead(i);
             continue;
         }
         worker_indices[sent] = i;
@@ -317,7 +372,14 @@ static void run_simulation(uint32_t total_trials, uint32_t task_id)
             fprintf(stderr,
                     "controller: failed to read result from worker %d: %s\n",
                     i, n < 0 ? strerror(errno) : "pipe closed");
-            workers[i].alive = 0;
+            mark_worker_dead(i);
+            continue;
+        }
+        if (result.task_id != task_id) {
+            fprintf(stderr,
+                    "controller: protocol error from worker %d (got task %u, expected %u)\n",
+                    i, result.task_id, task_id);
+            mark_worker_dead(i);
             continue;
         }
         total_hits   += result.num_hits;
