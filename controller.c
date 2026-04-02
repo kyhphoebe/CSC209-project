@@ -6,9 +6,9 @@
  *
  * Main responsibilities:
  * - Spawn a worker pool and keep per-worker pipe/pid state.
- * - Accept interactive commands (simulate, setbatch, stats, workers, quit).
+ * - Accept interactive commands (simulate, setbatch, partial, stats, workers, quit).
  * - Send typed task messages and validate typed responses.
- * - Aggregate batched simulation results and print metrics.
+ * - Aggregate batched simulation results and print statistics.
  */
 
 #include <stdio.h>
@@ -19,7 +19,6 @@
 #include <errno.h>
 #include <math.h>
 #include <signal.h>
-#include <time.h>
 #include <sys/wait.h>
 #include <sys/types.h>
 #include <limits.h>
@@ -40,13 +39,8 @@ typedef struct {
 static worker_t workers[MAX_WORKERS];
 static int      num_workers = 0;
 static uint32_t simulate_batch_trials = SIM_BATCH_TRIALS;
-
-static double elapsed_ms(const struct timespec *start, const struct timespec *end)
-{
-    double sec = (double)(end->tv_sec - start->tv_sec) * 1000.0;
-    double nsec = (double)(end->tv_nsec - start->tv_nsec) / 1000000.0;
-    return sec + nsec;
-}
+/* When non-zero, print each RESULT_SIMULATE as it is read (demo for setbatch). */
+static int      trace_partial_results = 0;
 
 static void close_fd_if_open(int *fd)
 {
@@ -291,13 +285,10 @@ static void shutdown_workers(void)
  * - send TASK_SIMULATE request to each selected worker
  * - read batched RESULT_SIMULATE messages until each worker's chunk is complete
  * - validate version/task_id/message type/batch metadata
- * - aggregate totals and print estimate, CI, and performance counters
+ * - aggregate totals and print estimate and CI
  */
 static void run_simulation(uint32_t total_trials, uint32_t task_id)
 {
-    struct timespec t_start, t_end;
-    clock_gettime(CLOCK_MONOTONIC, &t_start);
-
     /* Count alive workers. */
     int alive_count = 0;
     for (int i = 0; i < num_workers; i++) {
@@ -369,7 +360,6 @@ static void run_simulation(uint32_t total_trials, uint32_t task_id)
     uint64_t total_actual = 0;
     int      workers_completed = 0;
     int      partial_messages  = 0;
-    double   per_worker_read_ms[MAX_WORKERS];
 
     for (int s = 0; s < sent; s++) {
         int i = worker_indices[s];
@@ -380,8 +370,6 @@ static void run_simulation(uint32_t total_trials, uint32_t task_id)
             (expected_trials_i + batch_trials_i - 1U) / batch_trials_i;
         uint32_t last_batch_seen = 0;
         int worker_ok = 1;
-        struct timespec w_start, w_end;
-        clock_gettime(CLOCK_MONOTONIC, &w_start);
 
         /* Keep reading partial messages until this worker's assigned chunk is done. */
         while (received_trials_i < expected_trials_i && worker_ok) {
@@ -426,11 +414,19 @@ static void run_simulation(uint32_t total_trials, uint32_t task_id)
                     total_hits += result.num_hits;
                     total_actual += result.num_trials;
                     partial_messages++;
+                    if (trace_partial_results) {
+                        printf(
+                            "[partial] task %u worker[%d] batch %u/%u  "
+                            "trials=%u hits=%u  cumulative trials=%lu hits=%lu\n",
+                            task_id, i, result.batch_index, result.batch_total,
+                            result.num_trials, result.num_hits,
+                            (unsigned long)total_actual,
+                            (unsigned long)total_hits);
+                        fflush(stdout);
+                    }
                 }
             }
         }
-        clock_gettime(CLOCK_MONOTONIC, &w_end);
-        per_worker_read_ms[s] = elapsed_ms(&w_start, &w_end);
 
         if (received_trials_i == expected_trials_i) {
             workers_completed++;
@@ -451,11 +447,6 @@ static void run_simulation(uint32_t total_trials, uint32_t task_id)
 
     /* 95 % confidence interval via normal approximation of the binomial. */
     double margin = 1.96 * sqrt(p * (1.0 - p) / (double)total_actual) * 4.0;
-    clock_gettime(CLOCK_MONOTONIC, &t_end);
-    double total_ms = elapsed_ms(&t_start, &t_end);
-    double throughput = total_ms > 0.0
-                            ? ((double)total_actual * 1000.0) / total_ms
-                            : 0.0;
 
     printf("\n--- Simulation results (task %u) ---\n", task_id);
     printf("  Workers responded : %d / %d\n", workers_completed, sent);
@@ -466,12 +457,6 @@ static void run_simulation(uint32_t total_trials, uint32_t task_id)
     printf("  95%% CI            : [%.8f, %.8f]\n",
            pi_est - margin, pi_est + margin);
     printf("  Error vs. M_PI    : %+.8f\n", pi_est - M_PI);
-    printf("  Total time (ms)   : %.2f\n", total_ms);
-    printf("  Throughput        : %.0f trials/sec\n", throughput);
-    for (int s = 0; s < sent; s++) {
-        printf("  worker[%d] read+aggregate time (ms): %.2f\n",
-               worker_indices[s], per_worker_read_ms[s]);
-    }
     printf("------------------------------------\n\n");
 }
 
@@ -536,6 +521,7 @@ static void print_help(void)
     printf("Commands:\n");
     printf("  simulate <N>   run N Monte Carlo trials and estimate π\n");
     printf("  setbatch <N>   set max trials per partial result message\n");
+    printf("  partial on|off print each partial result as it arrives (demo)\n");
     printf("  stats          query per-worker processed-task counters\n");
     printf("  workers        show number of active worker processes\n");
     printf("  help           show this help message\n");
@@ -642,6 +628,22 @@ int main(int argc, char *argv[])
                     if (valid) {
                         run_simulation((uint32_t)total, task_id++);
                     }
+                }
+
+            } else if (strncmp(line, "partial", 7) == 0) {
+                char *rest = line + 7;
+                while (*rest == ' ' || *rest == '\t') rest++;
+                if (*rest == '\0') {
+                    printf("Partial result tracing: %s\n",
+                           trace_partial_results ? "on" : "off");
+                } else if (strcmp(rest, "on") == 0) {
+                    trace_partial_results = 1;
+                    printf("Partial result tracing enabled.\n");
+                } else if (strcmp(rest, "off") == 0) {
+                    trace_partial_results = 0;
+                    printf("Partial result tracing disabled.\n");
+                } else {
+                    printf("Usage: partial [on|off]  (no args: show current)\n");
                 }
 
             } else if (strcmp(line, "workers") == 0) {
