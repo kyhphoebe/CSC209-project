@@ -1,20 +1,13 @@
 /*
- * worker.c — Monte Carlo worker process
+ * worker.c - Worker-side message loop and simulation execution.
  *
- * Usage (invoked by controller via execl):
+ * Invoked by controller via exec:
  *   ./worker <task_read_fd> <result_write_fd> <seed>
  *
- * The worker reads task_msg_t structs from task_read_fd in a loop.
- * For each task it runs num_trials random Monte Carlo trials estimating π,
- * then writes a result_msg_t back on result_write_fd.
- * When a task with num_trials == SHUTDOWN_SENTINEL (0) is received, the
- * worker closes both pipe ends and exits with status 0.
- *
- * Error handling:
- *   - If read() on the task pipe returns 0 (pipe closed by parent) or -1,
- *     the worker treats it as an implicit shutdown and exits.
- *   - If write() on the result pipe fails, the worker exits immediately;
- *     the parent will detect this via SIGCHLD / waitpid.
+ * Protocol behavior:
+ * - Receives task_msg_t from task_read_fd.
+ * - Handles TASK_SIMULATE / TASK_STATUS_REQ / TASK_SHUTDOWN.
+ * - Sends result_msg_t responses to result_write_fd.
  */
 
 #include <stdio.h>
@@ -27,15 +20,8 @@
 #include "montecarlo.h"
 
 /*
- * run_trials – perform `num_trials` Monte Carlo samples.
- *
- * Generates random points (x, y) uniformly in [0, 1) × [0, 1) and
- * counts how many satisfy x² + y² ≤ 1 (inside the unit-circle quadrant).
- * Uses rand_r() with a caller-supplied seed for re-entrancy; the seed is
- * updated after each call so successive invocations produce independent
- * streams.
- *
- * Returns the number of hits (points inside the circle).
+ * Run num_trials Monte Carlo samples using rand_r(seed).
+ * Returns number of points that satisfy x*x + y*y <= 1.0.
  */
 static uint32_t run_trials(uint32_t num_trials, unsigned int *seed)
 {
@@ -51,10 +37,8 @@ static uint32_t run_trials(uint32_t num_trials, unsigned int *seed)
 }
 
 /*
- * read_full – read exactly `len` bytes from fd into buf.
- *
- * Retries on EINTR.  Returns the number of bytes read; a short read
- * (including 0 on EOF) is returned as-is so the caller can detect it.
+ * Read exactly len bytes unless EOF/error occurs first.
+ * Retries on EINTR and returns bytes read (or -1 on error).
  */
 static ssize_t read_full(int fd, void *buf, size_t len)
 {
@@ -66,18 +50,19 @@ static ssize_t read_full(int fd, void *buf, size_t len)
             return (ssize_t)total;
         }
         if (n < 0) {
-            if (errno == EINTR) continue;
-            return -1;
+            if (errno != EINTR) {
+                return -1;
+            }
+        } else {
+            total += (size_t)n;
         }
-        total += (size_t)n;
     }
     return (ssize_t)total;
 }
 
 /*
- * write_full – write exactly `len` bytes from buf to fd.
- *
- * Retries on EINTR.  Returns 0 on success, -1 on error.
+ * Write exactly len bytes.
+ * Retries on EINTR and returns 0 on success, -1 on error.
  */
 static int write_full(int fd, const void *buf, size_t len)
 {
@@ -86,10 +71,12 @@ static int write_full(int fd, const void *buf, size_t len)
     while (total < len) {
         ssize_t n = write(fd, p + total, len - total);
         if (n < 0) {
-            if (errno == EINTR) continue;
-            return -1;
+            if (errno != EINTR) {
+                return -1;
+            }
+        } else {
+            total += (size_t)n;
         }
-        total += (size_t)n;
     }
     return 0;
 }
@@ -110,41 +97,112 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    while (1) {
+    uint32_t tasks_completed = 0;
+    int running = 1;
+    while (running) {
         task_msg_t task;
         ssize_t n = read_full(task_fd, &task, sizeof(task));
 
         if (n == 0) {
             /* Parent closed the write end – treat as implicit shutdown. */
-            break;
-        }
-        if (n < 0) {
+            running = 0;
+        } else if (n < 0) {
             fprintf(stderr, "worker: read task pipe: %s\n", strerror(errno));
             close(task_fd);
             close(result_fd);
             return 1;
-        }
-        if ((size_t)n < sizeof(task)) {
+        } else if ((size_t)n < sizeof(task)) {
             /* Partial read — pipe closed mid-message; treat as shutdown. */
-            break;
-        }
+            running = 0;
+        } else if (task.version != PROTOCOL_VERSION) {
+            /* Version mismatch is recoverable: return RESULT_ERROR and wait for next request. */
+            result_msg_t mismatch;
+            mismatch.version         = PROTOCOL_VERSION;
+            mismatch.task_id         = task.task_id;
+            mismatch.msg_type        = RESULT_ERROR;
+            mismatch.num_trials      = 0;
+            mismatch.num_hits        = 0;
+            mismatch.batch_index     = 0;
+            mismatch.batch_total     = 0;
+            mismatch.tasks_completed = tasks_completed;
+            mismatch.error_code      = EPROTO;
+            (void)write_full(result_fd, &mismatch, sizeof(mismatch));
+        } else if (task.msg_type == TASK_SHUTDOWN) {
+            running = 0;
+        } else {
+            result_msg_t result;
+            int response_written = 0;
+            result.version         = PROTOCOL_VERSION;
+            result.task_id         = task.task_id;
+            result.msg_type        = RESULT_ERROR;
+            result.num_trials      = 0;
+            result.num_hits        = 0;
+            result.batch_index     = 0;
+            result.batch_total     = 0;
+            result.tasks_completed = tasks_completed;
+            result.error_code      = 0;
 
-        if (task.num_trials == SHUTDOWN_SENTINEL) {
-            break;
-        }
+            if (task.msg_type == TASK_SIMULATE) {
+                if (task.num_trials == 0) {
+                    result.msg_type = RESULT_ERROR;
+                    result.error_code = EINVAL;
+                    if (write_full(result_fd, &result, sizeof(result)) < 0) {
+                        fprintf(stderr, "worker: write result pipe: %s\n", strerror(errno));
+                        close(task_fd);
+                        close(result_fd);
+                        return 1;
+                    }
+                    response_written = 1;
+                } else {
+                    uint32_t batch_trials = task.batch_trials == 0
+                                                ? SIM_BATCH_TRIALS
+                                                : task.batch_trials;
+                    uint32_t batch_total =
+                        (task.num_trials + batch_trials - 1U) / batch_trials;
+                    uint32_t trials_left = task.num_trials;
+                    tasks_completed++;
 
-        uint32_t hits = run_trials(task.num_trials, &seed);
+                    /* Stream one RESULT_SIMULATE per batch so controller can aggregate incrementally. */
+                    for (uint32_t batch = 1; batch <= batch_total; batch++) {
+                        uint32_t this_batch = trials_left > batch_trials
+                                                  ? batch_trials
+                                                  : trials_left;
+                        uint32_t hits = run_trials(this_batch, &seed);
 
-        result_msg_t result;
-        result.task_id    = task.task_id;
-        result.num_trials = task.num_trials;
-        result.num_hits   = hits;
+                        result.msg_type = RESULT_SIMULATE;
+                        result.num_trials = this_batch;
+                        result.num_hits = hits;
+                        result.batch_index = batch;
+                        result.batch_total = batch_total;
+                        result.tasks_completed = tasks_completed;
+                        result.error_code = 0;
 
-        if (write_full(result_fd, &result, sizeof(result)) < 0) {
-            fprintf(stderr, "worker: write result pipe: %s\n", strerror(errno));
-            close(task_fd);
-            close(result_fd);
-            return 1;
+                        if (write_full(result_fd, &result, sizeof(result)) < 0) {
+                            fprintf(stderr, "worker: write result pipe: %s\n", strerror(errno));
+                            close(task_fd);
+                            close(result_fd);
+                            return 1;
+                        }
+                        trials_left -= this_batch;
+                    }
+                    response_written = 1;
+                }
+            } else if (task.msg_type == TASK_STATUS_REQ) {
+                result.msg_type = RESULT_STATUS;
+                result.tasks_completed = tasks_completed;
+            } else {
+                result.msg_type = RESULT_ERROR;
+                result.error_code = EPROTO;
+            }
+
+            if (!response_written) {
+                if (write_full(result_fd, &result, sizeof(result)) < 0) {
+                    fprintf(stderr, "worker: write result pipe: %s\n", strerror(errno));
+                    close(task_fd);
+                    close(result_fd);
+                    return 1;
+                }
+            }
         }
     }
 
