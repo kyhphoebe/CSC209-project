@@ -50,6 +50,7 @@ The controller reads commands from standard input:
 \begin{itemize}
   \item \texttt{simulate <N>} --- run $N$ trials across alive workers (work is split and results may arrive in \textbf{multiple partial messages} per worker).
   \item \texttt{setbatch <N>} --- set the maximum trials per partial \texttt{RESULT\_SIMULATE} message (increases message \emph{frequency} for the same $N$ when batches are small).
+  \item \texttt{partial on} / \texttt{partial off} --- print each partial result line as it is read (optional demo aid; default off).
   \item \texttt{stats} --- query each worker's cumulative simulate-task counter (separate control-plane traffic).
   \item \texttt{workers} --- print alive worker count.
   \item \texttt{help} / \texttt{quit} (or \texttt{exit}).
@@ -94,16 +95,15 @@ Defaults: four workers, base seed $42$. Constraints: \texttt{num\_workers} $\in 
 help
 stats
 setbatch 20000
+partial on
 simulate 500000
+partial off
 workers
 quit
 \end{lstlisting}
 
 \subsection{Optional demo script}
 \texttt{demo\_error.sh} rebuilds the project, runs the controller with piped input, kills one worker, and shows that later \texttt{simulate} commands still succeed with fewer alive workers.
-
-\subsection{Note on timing metrics}
-The controller prints wall-clock duration and throughput using \texttt{clock\_gettime(CLOCK\_MONOTONIC, ...)}. This is an \textbf{optional observability aid}; core grading mechanisms remain \texttt{fork}, \texttt{exec}, \texttt{pipe}, \texttt{read}/\texttt{write}, \texttt{waitpid}, and signals.
 
 % ---------------------------------------------------------------------------
 \section{Architecture}
