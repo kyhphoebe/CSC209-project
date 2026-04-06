@@ -29,6 +29,7 @@ static uint32_t run_trials(uint32_t num_trials, unsigned int *seed)
     for (uint32_t i = 0; i < num_trials; i++) {
         double x = (double)rand_r(seed) / ((double)RAND_MAX + 1.0);
         double y = (double)rand_r(seed) / ((double)RAND_MAX + 1.0);
+        
         if (x * x + y * y <= 1.0) {
             hits++;
         }
@@ -112,10 +113,8 @@ int main(int argc, char *argv[])
             close(result_fd);
             return 1;
         } else if ((size_t)n < sizeof(task)) {
-            /* Partial read — pipe closed mid-message; treat as shutdown. */
             running = 0;
         } else if (task.version != PROTOCOL_VERSION) {
-            /* Version mismatch is recoverable: return RESULT_ERROR and wait for next request. */
             result_msg_t mismatch;
             mismatch.version         = PROTOCOL_VERSION;
             mismatch.task_id         = task.task_id;

@@ -31,15 +31,15 @@
 /* Worker process and pipe endpoints owned by controller. */
 typedef struct {
     pid_t  pid;
-    int    task_write_fd;   /* controller writes task_msg_t here  */
-    int    result_read_fd;  /* controller reads result_msg_t here */
-    int    alive;           /* 1 = running, 0 = dead/reaped       */
+    int    task_write_fd;   
+    int    result_read_fd;  
+    int    alive;           /*1 = running, 0 = dead*/
 } worker_t;
 
 static worker_t workers[MAX_WORKERS];
 static int      num_workers = 0;
 static uint32_t simulate_batch_trials = SIM_BATCH_TRIALS;
-/* When non-zero, print each RESULT_SIMULATE as it is read. */
+/* When non-zero, print partial results. */
 static int      trace_partial_results = 0;
 
 static void close_fd_if_open(int *fd)
@@ -125,15 +125,11 @@ static int write_full(int fd, const void *buf, size_t len)
 
 /*
  * Spawn n workers and initialize controller-side worker state.
- *
- * On failure, rolls back partial startup:
- * - closes created pipe FDs
- * - terminates/reaps spawned children
- * - resets worker bookkeeping
+ * On failure, rolls back partial startup.
  */
 static int spawn_workers(int n, unsigned int base_seed)
 {
-    /* Two pipe FDs per worker: [0]=read, [1]=write */
+    /*[0]=read, [1]=write*/
     int task_pipes[MAX_WORKERS][2];
     int result_pipes[MAX_WORKERS][2];
     int pipes_ready = 0;
@@ -183,24 +179,22 @@ static int spawn_workers(int n, unsigned int base_seed)
                 }
             }
             /* Close the controller-side ends of our own pipes. */
-            close(task_pipes[i][1]);    /* parent writes here, child doesn't */
-            close(result_pipes[i][0]);  /* parent reads here, child doesn't  */
+            close(task_pipes[i][1]);
+            close(result_pipes[i][0]);
 
-            /* Build argv strings for the worker. */
             char task_fd_str[16], result_fd_str[16], seed_str[16];
-            snprintf(task_fd_str,   sizeof(task_fd_str),   "%d", task_pipes[i][0]);
+            snprintf(task_fd_str, sizeof(task_fd_str), "%d", task_pipes[i][0]);
             snprintf(result_fd_str, sizeof(result_fd_str), "%d", result_pipes[i][1]);
-            snprintf(seed_str,      sizeof(seed_str),      "%u", base_seed + (unsigned int)i);
+            snprintf(seed_str, sizeof(seed_str), "%u", base_seed + (unsigned int)i);
 
             execl("./worker", "./worker", task_fd_str, result_fd_str, seed_str,
                   (char *)NULL);
-            /* execl only returns on error. */
             perror("controller: execl worker");
             _exit(1);
         }
 
         /* ---- parent ---- */
-        /* Close the worker-side ends; we don't need them. */
+        /* Close the worker-side ends*/
         close(task_pipes[i][0]);
         close(result_pipes[i][1]);
 
@@ -238,7 +232,7 @@ fail:
 }
 
 /*
- * Graceful shutdown path:
+ * Graceful shutdown:
  * - send TASK_SHUTDOWN to alive workers
  * - close controller-side FDs for all workers
  * - waitpid() all known child PIDs
@@ -256,7 +250,6 @@ static void shutdown_workers(void)
         if (workers[i].alive &&
             write_full(workers[i].task_write_fd, &shutdown_msg,
                        sizeof(shutdown_msg)) < 0) {
-            /* Worker may have already died; SIGCHLD will have marked it. */
             if (errno != EPIPE) {
                 perror("controller: write shutdown");
             }
@@ -281,13 +274,6 @@ static void shutdown_workers(void)
 
 /*
  * Run one simulation command across alive workers.
- *
- * Flow:
- * - partition total_trials across alive workers
- * - send TASK_SIMULATE request to each selected worker
- * - read batched RESULT_SIMULATE messages until each worker's chunk is complete
- * - validate version/task_id/message type/batch metadata
- * - aggregate totals and print estimate and CI
  */
 static void run_simulation(uint32_t total_trials, uint32_t task_id)
 {
@@ -307,17 +293,15 @@ static void run_simulation(uint32_t total_trials, uint32_t task_id)
 
     /* Send tasks.
      * Distribute remainder one-by-one to the first `remainder` workers so
-     * every worker that is sent a task gets at least 1 trial.
-     * Workers with a computed chunk of 0 are skipped and remain idle. */
+     * every worker that is sent a task gets at least 1 trial.*/
     int worker_indices[MAX_WORKERS];
     uint32_t expected_trials_for_worker[MAX_WORKERS];
     uint32_t batch_trials_for_worker[MAX_WORKERS];
-    int sent      = 0; /* index among alive workers, used to assign remainder */
+    int sent      = 0;
     int alive_idx = 0;
 
     for (int i = 0; i < num_workers; i++) {
         if (workers[i].alive) {
-            /* Workers 0 .. remainder-1 each get one extra trial. */
             uint32_t chunk = base_chunk + (alive_idx < (int)remainder ? 1u : 0u);
             alive_idx++;
 
@@ -342,7 +326,6 @@ static void run_simulation(uint32_t total_trials, uint32_t task_id)
                 }
 
                 if (write_ok) {
-                    /* Persist per-worker expectations so receive-side validation is strict. */
                     worker_indices[sent] = i;
                     expected_trials_for_worker[sent] = chunk;
                     batch_trials_for_worker[sent] = simulate_batch_trials;
@@ -357,7 +340,7 @@ static void run_simulation(uint32_t total_trials, uint32_t task_id)
         return;
     }
 
-    /* Collect partial results from workers that were sent a task. */
+    /* Collect partial results from workers that had a task. */
     uint64_t total_hits   = 0;
     uint64_t total_actual = 0;
     int      workers_completed = 0;
@@ -445,7 +428,6 @@ static void run_simulation(uint32_t total_trials, uint32_t task_id)
         if (received_trials_i == expected_trials_i) {
             workers_completed++;
         } else {
-            /* Incomplete response stream: retire worker to protect future tasks. */
             mark_worker_dead(i);
         }
     }
@@ -582,7 +564,6 @@ int main(int argc, char *argv[])
         base_seed = (unsigned int)atoi(argv[2]);
     }
 
-    /* Ignore SIGPIPE so write() to a dead worker returns EPIPE. */
     struct sigaction sa_pipe;
     memset(&sa_pipe, 0, sizeof(sa_pipe));
     sa_pipe.sa_handler = SIG_IGN;
@@ -591,7 +572,6 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    /* Install SIGCHLD handler to reap unexpected worker deaths. */
     struct sigaction sa_chld;
     memset(&sa_chld, 0, sizeof(sa_chld));
     sa_chld.sa_handler = sigchld_handler;
