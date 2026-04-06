@@ -39,7 +39,7 @@ typedef struct {
 static worker_t workers[MAX_WORKERS];
 static int      num_workers = 0;
 static uint32_t simulate_batch_trials = SIM_BATCH_TRIALS;
-/* When non-zero, print each RESULT_SIMULATE as it is read (demo for setbatch). */
+/* When non-zero, print each RESULT_SIMULATE as it is read. */
 static int      trace_partial_results = 0;
 
 static void close_fd_if_open(int *fd)
@@ -63,9 +63,9 @@ static void mark_worker_dead(int i)
 }
 
 /*
- * Reap exited children without blocking.
- * Handler only updates lightweight liveness state; heavy cleanup is done in
- * normal control-flow paths.
+ * Reap exited children without blocking, close their pipe fds, and clear pid.
+ * Matches shutdown/mark_worker_dead cleanup so descriptors do not linger after
+ * unexpected worker death.
  */
 static void sigchld_handler(int signo)
 {
@@ -78,6 +78,8 @@ static void sigchld_handler(int signo)
         for (int i = 0; i < num_workers && !found; i++) {
             if (workers[i].pid == pid) {
                 workers[i].alive = 0;
+                close_worker_fds(i);
+                workers[i].pid = 0;
                 found = 1;
             }
         }
@@ -401,6 +403,14 @@ static void run_simulation(uint32_t total_trials, uint32_t task_id)
                         "controller: invalid batch metadata from worker %d\n", i);
                 mark_worker_dead(i);
                 worker_ok = 0;
+            } else if (result.num_trials == 0 ||
+                       result.num_hits > result.num_trials) {
+                fprintf(stderr,
+                        "controller: invalid trial/hit counts from worker %d "
+                        "(trials=%u hits=%u)\n",
+                        i, result.num_trials, result.num_hits);
+                mark_worker_dead(i);
+                worker_ok = 0;
             } else {
                 last_batch_seen = result.batch_index;
                 received_trials_i += result.num_trials;
@@ -521,7 +531,7 @@ static void print_help(void)
     printf("Commands:\n");
     printf("  simulate <N>   run N Monte Carlo trials and estimate π\n");
     printf("  setbatch <N>   set max trials per partial result message\n");
-    printf("  partial on|off print each partial result as it arrives (demo)\n");
+    printf("  partial on|off print each partial result as it arrives\n");
     printf("  stats          query per-worker processed-task counters\n");
     printf("  workers        show number of active worker processes\n");
     printf("  help           show this help message\n");
