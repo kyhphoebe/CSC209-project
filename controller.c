@@ -374,6 +374,10 @@ static void run_simulation(uint32_t total_trials, uint32_t task_id)
         int worker_ok = 1;
 
         /* Keep reading partial messages until this worker's assigned chunk is done. */
+        /*
+         * Lines 381-443: stderr for result read / protocol errors; stdout partial trace.
+         * Drafted with Claude; I reviewed, modified, and tested it.
+         */
         while (received_trials_i < expected_trials_i && worker_ok) {
             result_msg_t result;
             ssize_t n = read_full(workers[i].result_read_fd, &result, sizeof(result));
@@ -458,6 +462,10 @@ static void run_simulation(uint32_t total_trials, uint32_t task_id)
     /* 95 % confidence interval via normal approximation of the binomial. */
     double margin = 1.96 * sqrt(p * (1.0 - p) / (double)total_actual) * 4.0;
 
+    /*
+     * Lines 469-478: stdout simulation summary, π estimate, and confidence interval.
+     * Drafted with Claude; I reviewed, modified, and tested it.
+     */
     printf("\n--- Simulation results (task %u) ---\n", task_id);
     printf("  Workers responded : %d / %d\n", workers_completed, sent);
     printf("  Partial messages  : %d\n", partial_messages);
@@ -500,6 +508,10 @@ static void query_worker_stats(uint32_t task_id)
         return;
     }
 
+    /*
+     * Lines 515-537: stdout/stderr for per-worker stats responses.
+     * Drafted with Claude; I reviewed, modified, and tested it.
+     */
     printf("\n--- Worker stats (task %u) ---\n", task_id);
     for (int s = 0; s < sent; s++) {
         int i = worker_indices[s];
@@ -528,6 +540,10 @@ static void query_worker_stats(uint32_t task_id)
 /* Print command usage for the interactive prompt. */
 static void print_help(void)
 {
+    /*
+     * Lines 547-554: stdout interactive help text.
+     * Drafted with Claude; I reviewed, modified, and tested it.
+     */
     printf("Commands:\n");
     printf("  simulate <N>   run N Monte Carlo trials and estimate π\n");
     printf("  setbatch <N>   set max trials per partial result message\n");
@@ -600,6 +616,10 @@ int main(int argc, char *argv[])
     char     line[256];
 
     int running = 1;
+    /*
+     * Lines 623-715: REPL prompt, command feedback printf calls, and EOF handling.
+     * Drafted with Claude; I reviewed, modified, and tested it.
+     */
     while (running) {
         printf("> ");
         fflush(stdout);
