@@ -1,51 +1,87 @@
-# CSC209 Project — Parallel Monte Carlo π Estimation
+# CSC209 — Parallel Monte Carlo π Simulator
 
-A small C program that estimates **π** with a Monte Carlo method (random points in the unit square, fraction inside the quarter unit circle) using **multiple worker processes** coordinated by a parent **controller**.
+## Language / 语言
 
-## What this project does
+- **Implementation language:** **C** (POSIX; compiled with **gcc** and `-Wall -Wextra -g` per `Makefile`).
+- **实现语言：** **C**，依赖 POSIX 接口（`fork`、`pipe`、`exec`、`waitpid` 等）。
 
-- **Workers** run batches of trials with `rand_r`, count hits where $x^2 + y^2 \leq 1$, and stream **partial results** back so large jobs do not need one huge message.
-- The **controller** splits a `simulate N` request across alive workers, reads `result_msg_t` messages, aggregates hits vs trials, and prints an estimate of π and run statistics.
-- Communication is **binary and structured**: `task_msg_t` / `result_msg_t` in `montecarlo.h` (versioned protocol, task types for simulate / shutdown / status).
+---
 
-## Architecture
+## Project introduction / 项目介绍
 
-| Component    | Role |
-|-------------|------|
-| `controller.c` | `fork` + `execl("./worker", ...)`, two pipes per worker (tasks in, results out), `SIGCHLD` handler to reap dead children, interactive REPL |
-| `worker.c`     | Loop: read tasks, run simulation or status, write results; exits on shutdown |
-| `montecarlo.h` | Shared message layouts and constants (`PROTOCOL_VERSION`, batch size defaults, etc.) |
+**English.** This project is a multiprocess Monte Carlo simulator. A parent **controller** forks several **worker** children and talks to each over two **pipes** using a small binary protocol (`task_msg_t` / `result_msg_t` in `montecarlo.h`). Workers draw random points in the unit square and count how many fall inside the quarter unit circle ($x^2 + y^2 \leq 1$); the controller **partitions** each `simulate` job across workers, **aggregates** partial results, and prints an estimate of **π**, a confidence interval, and diagnostics. It demonstrates process management, non-blocking child reaping (`SIGCHLD`), and structured IPC.
 
-Requires **`worker` built next to `controller`** (same directory), because the controller execs `./worker`.
+**中文.** 本项目用多进程做蒙特卡洛模拟：父进程 **controller** 创建多个 **worker** 子进程，通过**管道**用二进制消息通信。worker 在单位正方形内随机投点，统计落在四分之一单位圆内的比例；controller 把每次 `simulate` 任务分给各 worker，汇总**分批返回**的结果，输出 **π 的估计**、置信区间和统计信息，涵盖进程创建、`SIGCHLD` 回收子进程与进程间通信等主题。
 
-## Build and run
+---
+
+## Demo
+
+Build, run with four workers and a fixed base seed, then try a simulation and exit:
 
 ```bash
-make              # builds controller and worker
-./controller [num_workers [seed]]
+make clean && make
+./controller 4 42
 ```
 
-Default worker count is defined in `montecarlo.h` (`DEFAULT_NUM_WORKERS`). The controller enforces a **minimum of 3 workers** at startup (see `controller.c`).
+Example session (your π estimate and counts will differ slightly each run):
 
-## Interactive commands
+```text
+Monte Carlo π Simulator
+Spawning 4 worker processes (base seed 42)...
+Workers ready.  Type 'help' for available commands.
 
-After starting the controller:
+> help
+Commands:
+  simulate <N>   run N Monte Carlo trials and estimate π
+  setbatch <N>   set max trials per partial result message
+  partial on|off print each partial result as it arrives
+  stats          query per-worker processed-task counters
+  workers        show number of active worker processes
+  help           show this help message
+  quit           shut down workers and exit
 
-- `simulate <N>` — run `N` trials in parallel and print π estimate and stats  
-- `setbatch <N>` — cap trials per partial result message  
-- `partial on|off` — trace each partial result as it arrives  
-- `stats` — query per-worker task counters  
-- `workers` — show how many worker processes are active  
-- `quit` — shut down workers and exit  
+> simulate 200000
 
-Type `help` in the program for the same list.
+--- Simulation results (task 1) ---
+  Workers responded : 4 / 4
+  Partial messages  : ...
+  Trials run        : 200000
+  Hits (in circle)  : ...
+  π estimate        : 3.14.......
+  95% CI            : [..., ...]
+  Error vs. M_PI    : ...
+------------------------------------
 
-## Clean
+> stats
+> workers
+> quit
+Shutting down workers...
+All workers exited.  Goodbye.
+```
+
+Optional: turn on streaming partial messages with `partial on` before `simulate` to see each batch as it arrives.
+
+---
+
+## Architecture (brief)
+
+| File | Role |
+|------|------|
+| `controller.c` | Spawns `./worker`, REPL, task split/merge, `SIGCHLD` handling |
+| `worker.c` | Reads tasks, runs trials with `rand_r`, writes results |
+| `montecarlo.h` | Protocol version, message structs, defaults |
+
+The controller runs `execl("./worker", ...)`, so **`worker` must be built in the same directory** as `controller`.
+
+---
+
+## Build, run, clean
 
 ```bash
+make                    # builds controller + worker
+./controller [num_workers [seed]]
 make clean
 ```
 
-## Requirements
-
-- C compiler (`gcc` or compatible), POSIX-like environment (`unistd`, `fork`, `pipe`, `waitpid`).
+If you pass `num_workers` on the command line, it must be **at least 3** and at most `MAX_WORKERS` (see `controller.c`). With no arguments, defaults from `montecarlo.h` apply.
