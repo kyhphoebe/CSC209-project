@@ -1,11 +1,5 @@
 # CSC209 — Parallel Monte Carlo π Simulator
 
-## Language
-
-Written in **C** for POSIX systems, built with **gcc** using `-Wall -Wextra -g` (see `Makefile`). Uses standard process and IPC APIs (`fork`, `pipe`, `exec`, `waitpid`, etc.).
-
----
-
 ## Project overview
 
 This project is a multiprocess Monte Carlo simulator. A parent **controller** forks several **worker** children and talks to each over two **pipes** using a small binary protocol (`task_msg_t` / `result_msg_t` in `montecarlo.h`). Workers draw random points in the unit square and count how many fall inside the quarter unit circle (points where **x² + y² ≤ 1**); the controller **partitions** each `simulate` job across workers, **aggregates** partial results, and prints an estimate of **π**, a confidence interval, and diagnostics. It demonstrates process management, non-blocking child reaping (`SIGCHLD`), and structured IPC.
@@ -82,3 +76,11 @@ make clean
 ```
 
 If you pass `num_workers` on the command line, it must be **at least 3** and at most `MAX_WORKERS` (see `controller.c`). With no arguments, defaults from `montecarlo.h` apply.
+
+---
+
+## Language
+
+Written in **C** for POSIX systems, built with **gcc** using `-Wall -Wextra -g` (see `Makefile`). Uses standard process and IPC APIs (`fork`, `pipe`, `exec`, `waitpid`, etc.).
+
+---
