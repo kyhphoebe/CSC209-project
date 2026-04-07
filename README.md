@@ -1,17 +1,14 @@
 # CSC209 — Parallel Monte Carlo π Simulator
 
-## Language / 语言
+## Language
 
-- **Implementation language:** **C** (POSIX; compiled with **gcc** and `-Wall -Wextra -g` per `Makefile`).
-- **实现语言：** **C**，依赖 POSIX 接口（`fork`、`pipe`、`exec`、`waitpid` 等）。
+Written in **C** for POSIX systems, built with **gcc** using `-Wall -Wextra -g` (see `Makefile`). Uses standard process and IPC APIs (`fork`, `pipe`, `exec`, `waitpid`, etc.).
 
 ---
 
-## Project introduction / 项目介绍
+## Project overview
 
-**English.** This project is a multiprocess Monte Carlo simulator. A parent **controller** forks several **worker** children and talks to each over two **pipes** using a small binary protocol (`task_msg_t` / `result_msg_t` in `montecarlo.h`). Workers draw random points in the unit square and count how many fall inside the quarter unit circle ($x^2 + y^2 \leq 1$); the controller **partitions** each `simulate` job across workers, **aggregates** partial results, and prints an estimate of **π**, a confidence interval, and diagnostics. It demonstrates process management, non-blocking child reaping (`SIGCHLD`), and structured IPC.
-
-**中文.** 本项目用多进程做蒙特卡洛模拟：父进程 **controller** 创建多个 **worker** 子进程，通过**管道**用二进制消息通信。worker 在单位正方形内随机投点，统计落在四分之一单位圆内的比例；controller 把每次 `simulate` 任务分给各 worker，汇总**分批返回**的结果，输出 **π 的估计**、置信区间和统计信息，涵盖进程创建、`SIGCHLD` 回收子进程与进程间通信等主题。
+This project is a multiprocess Monte Carlo simulator. A parent **controller** forks several **worker** children and talks to each over two **pipes** using a small binary protocol (`task_msg_t` / `result_msg_t` in `montecarlo.h`). Workers draw random points in the unit square and count how many fall inside the quarter unit circle ($x^2 + y^2 \leq 1$); the controller **partitions** each `simulate` job across workers, **aggregates** partial results, and prints an estimate of **π**, a confidence interval, and diagnostics. It demonstrates process management, non-blocking child reaping (`SIGCHLD`), and structured IPC.
 
 ---
 
