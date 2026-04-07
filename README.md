@@ -4,7 +4,7 @@ A small C program that estimates **π** with a Monte Carlo method (random points
 
 ## What this project does
 
-- **Workers** run batches of trials with `rand_r`, count hits where \(x^2 + y^2 \le 1\), and stream **partial results** back so large jobs do not need one huge message.
+- **Workers** run batches of trials with `rand_r`, count hits where $x^2 + y^2 \leq 1$, and stream **partial results** back so large jobs do not need one huge message.
 - The **controller** splits a `simulate N` request across alive workers, reads `result_msg_t` messages, aggregates hits vs trials, and prints an estimate of π and run statistics.
 - Communication is **binary and structured**: `task_msg_t` / `result_msg_t` in `montecarlo.h` (versioned protocol, task types for simulate / shutdown / status).
 
